@@ -1,70 +1,142 @@
 import subprocess
 import questionary
+import re
+import sys
+import tempfile
+import os
+from utils.git_repo import get_repo_info
+
+def get_remote_branch_version(repo_root, branch):
+    """更可靠地获取远程分支版本号"""
+    try:
+        original_dir = os.getcwd()
+        os.chdir(repo_root)
+        
+        # 1. 先检查远程分支是否存在
+        remote_refs = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", branch],
+            capture_output=True, text=True
+        ).stdout.strip()
+        
+        if not remote_refs:
+            return None
+            
+        # 2. 直接从远程获取提交信息（不依赖本地对象）
+        commit_hash = remote_refs.split()[0]
+        commit_info = subprocess.run(
+            ["git", "fetch", "origin", f"{branch}:refs/remotes/origin/{branch}", "--quiet"],
+            capture_output=True, text=True
+        )
+        
+        # 3. 使用git show获取提交信息（现在本地有对象了）
+        commit_msg = subprocess.run(
+            ["git", "show", "-s", "--format=%B", commit_hash],
+            capture_output=True, text=True
+        ).stdout.strip()
+        
+        # 4. 提取版本号
+        first_line = commit_msg.split('\n')[0]
+        version_match = re.search(r'(v\d+\.\d+\.\d+)(?:-(dev|beta)\.\d+)?', first_line)
+        
+        return version_match.group(0) if version_match else None
+        
+    except Exception as e:
+        print(f"⚠️ 获取分支 {branch} 版本时出错: {str(e)}")
+        return None
+    finally:
+        os.chdir(original_dir)
 
 def promote():
-    print("🚀 直接版本复制工具")
+    print("🚀 远程分支复制工具 (不操作本地文件)")
+    
+    # 获取仓库信息
+    repo_info = get_repo_info()
+    if not repo_info.is_repo or not repo_info.remote_url:
+        print("❌ 当前目录不是Git仓库或没有远程仓库")
+        return
+    
+    # 获取各分支当前版本（带重试机制）
+    dev_version = get_remote_branch_version(repo_info.root_path, "dev")
+    beta_version = get_remote_branch_version(repo_info.root_path, "beta")
+    
+    # 准备选择项
+    choices = []
+    
+    # dev → beta 选项
+    if dev_version:
+        new_version = re.sub(r'-dev\.\d+', '-beta.1', dev_version)
+        choices.append({
+            "name": f"dev({dev_version}) → beta({new_version})",
+            "value": ("dev", "beta", dev_version, new_version)
+        })
+    
+    # beta → main 选项
+    if beta_version:
+        new_version = re.sub(r'-beta\.\d+', '', beta_version)
+        choices.append({
+            "name": f"beta({beta_version}) → main({new_version})",
+            "value": ("beta", "main", beta_version, new_version)
+        })
+    
+    if not choices:
+        print("❌ 没有可用的分支或无法获取版本号")
+        print("请检查：")
+        print("1. 确保远程仓库有dev或beta分支")
+        print("2. 确保提交信息第一行包含版本号（如v1.0.0-dev.1）")
+        print("3. 确保有网络连接可以访问远程仓库")
+        return
     
     # 选择复制方向
     action = questionary.select(
         "选择复制方向:",
-        choices=[
-            {"name": "dev → beta", "value": ("dev", "beta")},
-            {"name": "beta → main", "value": ("beta", "main")}
-        ]
+        choices=choices
     ).ask()
 
     if not action:
+        print("🚫 操作取消")
         return
 
-    from_branch, to_branch = action
+    from_branch, to_branch, old_version, new_version = action
 
-    # 获取最新dev提交
-    latest_commit = subprocess.run(
-        ["git", "log", "-1", "--pretty=%H", f"origin/{from_branch}"],
-        capture_output=True,
-        text=True
-    ).stdout.strip()
-
-    if not latest_commit:
-        print("❌ 无法获取最新提交")
+    # 确认操作
+    print(f"\n🔄 即将执行以下操作：")
+    print(f"• 从分支: {from_branch}({old_version})")
+    print(f"• 复制到分支: {to_branch}({new_version})")
+    if not questionary.confirm("确认继续?").ask():
+        print("🚫 操作取消")
         return
 
-    # 获取提交信息
-    commit_msg = subprocess.run(
-        ["git", "log", "-1", "--pretty=%B", latest_commit],
-        capture_output=True,
-        text=True
-    ).stdout.strip()
-
-    # 转换版本号
-    first_line = commit_msg.split('\n')[0]
-    version = first_line.split()[0]  # 获取原始版本号
-    
-    if to_branch == "beta":
-        new_version = version.replace("-dev", "-beta")
-    elif to_branch == "main":
-        new_version = version.split("-")[0]  # 移除后缀
-
-    # 获取用户输入
-    title = questionary.text("输入新标题:").ask() or f"Promote to {to_branch}"
-    desc = questionary.text("输入新描述:").ask() or commit_msg
-
-    # 执行复制（强制覆盖）
-    commands = [
-        ["git", "checkout", to_branch],
-        ["git", "reset", "--hard", latest_commit],
-        ["git", "commit", "--amend", "-m", f"{new_version} {title}\n\n{desc}"],
-        ["git", "push", "origin", to_branch, "--force"]
-    ]
-
-    for cmd in commands:
-        print(f"⚡ 执行: {' '.join(cmd)}")
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            print("❌ 执行失败")
-            return
-
-    print(f"✅ 已强制将 {from_branch} 的 {version} 复制为 {new_version} 到 {to_branch}")
+    # 执行操作
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            print(f"⚡ 正在克隆裸仓库到临时目录...")
+            subprocess.run(
+                ["git", "clone", "--bare", repo_info.remote_url, tmp_dir],
+                check=True, stdout=subprocess.PIPE
+            )
+            
+            print(f"⚡ 正在更新 {to_branch} 分支...")
+            subprocess.run(
+                ["git", "push", "origin", f"refs/heads/{from_branch}:refs/heads/{to_branch}", "--force"],
+                cwd=tmp_dir, check=True
+            )
+            
+            print(f"⚡ 正在更新提交信息...")
+            subprocess.run(
+                ["git", "filter-branch", "-f", "--msg-filter", 
+                 f"sed '1s/.*/{new_version} {to_branch} release/'", 
+                 f"{from_branch}..{to_branch}"],
+                cwd=tmp_dir, check=True
+            )
+            
+            print(f"\n✅ 操作成功完成！")
+            print(f"• 源分支: {from_branch}@{old_version}")
+            print(f"• 目标分支: {to_branch}@{new_version}")
+            
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ 操作失败: {e.stderr.decode().strip() if e.stderr else str(e)}")
+    except Exception as e:
+        print(f"\n❌ 发生错误: {str(e)}")
 
 if __name__ == "__main__":
     promote()
