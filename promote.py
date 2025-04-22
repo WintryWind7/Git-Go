@@ -46,6 +46,7 @@ def get_remote_branch_version(repo_root, branch):
     finally:
         os.chdir(original_dir)
 
+
 def promote():
     print("🚀 远程分支复制工具 (不操作本地文件)")
     
@@ -128,7 +129,7 @@ def promote():
                 cwd=tmp_dir, check=True
             )
             
-            # 创建新的提交（按要求的格式）
+            # 创建新的提交（合并为一个提交）
             commit_message = f"{new_version}\n\nupdate from\n{old_version}"
             subprocess.run(
                 ["git", "commit", "--allow-empty", "-m", commit_message],
@@ -141,13 +142,13 @@ def promote():
                 cwd=work_dir, capture_output=True, text=True, check=True
             ).stdout.strip()
             
-            # 更新目标分支引用
+            # 更新目标分支引用（包括main分支）
             subprocess.run(
                 ["git", "update-ref", f"refs/heads/{to_branch}", new_commit],
                 cwd=tmp_dir, check=True
             )
             
-            # 强制推送
+            # 强制推送（包括main分支）
             subprocess.run(
                 ["git", "push", "origin", f"refs/heads/{to_branch}:refs/heads/{to_branch}", "--force"],
                 cwd=tmp_dir, check=True
@@ -161,7 +162,7 @@ def promote():
             
             print(f"\n✅ 操作成功完成！")
             print(f"• 源分支: {from_branch}@{old_version}")
-            print(f"• 目标分支: {to_branch}@{new_version}")
+            print(f"• 目标分支: {to_branch}@{new_version} (已合并为一个提交)")
             print(f"• 提交信息:\n{commit_message}")
             
     except subprocess.CalledProcessError as e:
@@ -169,7 +170,6 @@ def promote():
         print(f"\n❌ 操作失败: {error_msg.strip()}")
     except Exception as e:
         print(f"\n❌ 发生错误: {str(e)}")
-
 
 
 if __name__ == "__main__":
