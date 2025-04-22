@@ -116,16 +116,28 @@ def promote():
             )
             
             print(f"⚡ 正在更新 {to_branch} 分支...")
+            # 先强制推送分支
             subprocess.run(
                 ["git", "push", "origin", f"refs/heads/{from_branch}:refs/heads/{to_branch}", "--force"],
                 cwd=tmp_dir, check=True
             )
             
             print(f"⚡ 正在更新提交信息...")
+            # 使用更可靠的修改提交信息方式
+            env = os.environ.copy()
+            env["FILTER_BRANCH_SQUELCH_WARNING"] = "1"
+            
+            # 修改为正确的引用范围
             subprocess.run(
                 ["git", "filter-branch", "-f", "--msg-filter", 
                  f"sed '1s/.*/{new_version} {to_branch} release/'", 
-                 f"{from_branch}..{to_branch}"],
+                 f"{to_branch}"],  # 只修改目标分支
+                cwd=tmp_dir, check=True, env=env
+            )
+            
+            # 再次推送更新后的分支
+            subprocess.run(
+                ["git", "push", "origin", f"refs/heads/{to_branch}:refs/heads/{to_branch}", "--force"],
                 cwd=tmp_dir, check=True
             )
             
