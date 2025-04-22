@@ -55,14 +55,13 @@ def promote():
         print("❌ 当前目录不是Git仓库或没有远程仓库")
         return
     
-    # 获取各分支当前版本（带重试机制）
+    # 获取各分支当前版本
     dev_version = get_remote_branch_version(repo_info.root_path, "dev")
     beta_version = get_remote_branch_version(repo_info.root_path, "beta")
     
     # 准备选择项
     choices = []
     
-    # dev → beta 选项
     if dev_version:
         new_version = re.sub(r'-dev\.\d+', '-beta.1', dev_version)
         choices.append({
@@ -70,7 +69,6 @@ def promote():
             "value": ("dev", "beta", dev_version, new_version)
         })
     
-    # beta → main 选项
     if beta_version:
         new_version = re.sub(r'-beta\.\d+', '', beta_version)
         choices.append({
@@ -112,43 +110,67 @@ def promote():
             print(f"⚡ 正在克隆裸仓库到临时目录...")
             subprocess.run(
                 ["git", "clone", "--bare", repo_info.remote_url, tmp_dir],
-                check=True, stdout=subprocess.PIPE
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             
-            print(f"⚡ 正在更新 {to_branch} 分支...")
-            # 先强制推送分支
+            print(f"⚡ 正在创建合并提交...")
+            # 获取源分支最新提交
+            remote_ref = subprocess.run(
+                ["git", "ls-remote", "--heads", repo_info.remote_url, from_branch],
+                cwd=tmp_dir, capture_output=True, text=True, check=True
+            ).stdout.strip()
+            commit_hash = remote_ref.split()[0]
+            
+            # 创建临时工作目录
+            work_dir = os.path.join(tmp_dir, "worktree")
             subprocess.run(
-                ["git", "push", "origin", f"refs/heads/{from_branch}:refs/heads/{to_branch}", "--force"],
+                ["git", "worktree", "add", work_dir, commit_hash],
                 cwd=tmp_dir, check=True
             )
             
-            print(f"⚡ 正在更新提交信息...")
-            # 使用更可靠的修改提交信息方式
-            env = os.environ.copy()
-            env["FILTER_BRANCH_SQUELCH_WARNING"] = "1"
-            
-            # 修改为正确的引用范围
+            # 创建新的提交（按要求的格式）
+            commit_message = f"{new_version}\n\nupdate from\n{old_version}"
             subprocess.run(
-                ["git", "filter-branch", "-f", "--msg-filter", 
-                 f"sed '1s/.*/{new_version} {to_branch} release/'", 
-                 f"{to_branch}"],  # 只修改目标分支
-                cwd=tmp_dir, check=True, env=env
+                ["git", "commit", "--allow-empty", "-m", commit_message],
+                cwd=work_dir, check=True
             )
             
-            # 再次推送更新后的分支
+            # 获取新提交的哈希
+            new_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=work_dir, capture_output=True, text=True, check=True
+            ).stdout.strip()
+            
+            # 更新目标分支引用
+            subprocess.run(
+                ["git", "update-ref", f"refs/heads/{to_branch}", new_commit],
+                cwd=tmp_dir, check=True
+            )
+            
+            # 强制推送
             subprocess.run(
                 ["git", "push", "origin", f"refs/heads/{to_branch}:refs/heads/{to_branch}", "--force"],
+                cwd=tmp_dir, check=True
+            )
+            
+            # 清理工作目录
+            subprocess.run(
+                ["git", "worktree", "remove", work_dir],
                 cwd=tmp_dir, check=True
             )
             
             print(f"\n✅ 操作成功完成！")
             print(f"• 源分支: {from_branch}@{old_version}")
             print(f"• 目标分支: {to_branch}@{new_version}")
+            print(f"• 提交信息:\n{commit_message}")
             
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ 操作失败: {e.stderr.decode().strip() if e.stderr else str(e)}")
+        error_msg = e.stderr if isinstance(e.stderr, str) else e.stderr.decode('utf-8') if e.stderr else str(e)
+        print(f"\n❌ 操作失败: {error_msg.strip()}")
     except Exception as e:
         print(f"\n❌ 发生错误: {str(e)}")
+
+
 
 if __name__ == "__main__":
     promote()
