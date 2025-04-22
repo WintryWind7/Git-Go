@@ -112,14 +112,22 @@ class FinalVersionManager:
                     check=True, capture_output=True
                 )
                 
-                # 2. 检查并切换到dev分支（不存在则创建）
-                branch_check = subprocess.run(
-                    ["git", "show-ref", "--verify", "refs/heads/dev"],
-                    cwd=tmp_dir, capture_output=True
+                # 2. 检查远程dev分支是否存在
+                remote_branch_check = subprocess.run(
+                    ["git", "ls-remote", "--heads", "origin", "dev"],
+                    cwd=tmp_dir, capture_output=True, text=True
                 )
                 
-                if branch_check.returncode != 0:
-                    print("⚠️ dev分支不存在，将创建新分支")
+                if remote_branch_check.returncode == 0 and remote_branch_check.stdout.strip():
+                    # 远程dev分支存在，创建本地跟踪分支
+                    print("✅ 检测到远程dev分支")
+                    subprocess.run(
+                        ["git", "checkout", "-b", "dev", "--track", "origin/dev"],
+                        cwd=tmp_dir, check=True
+                    )
+                else:
+                    # 远程dev分支不存在，创建新分支
+                    print("⚠️ 远程dev分支不存在，将创建新分支")
                     subprocess.run(
                         ["git", "checkout", "--orphan", "dev"],
                         cwd=tmp_dir, check=True
@@ -128,12 +136,7 @@ class FinalVersionManager:
                         ["git", "rm", "-rf", "."],
                         cwd=tmp_dir, check=True
                     )
-                else:
-                    subprocess.run(
-                        ["git", "checkout", "dev"],
-                        cwd=tmp_dir, check=True
-                    )
-                
+                    
                 # 3. 清空临时仓库（保留.git目录）
                 print("🧹 清空临时仓库...")
                 for item in os.listdir(tmp_dir):
