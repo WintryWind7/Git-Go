@@ -64,7 +64,13 @@ def promote():
     choices = []
     
     if dev_version:
-        new_version = re.sub(r'-dev\.\d+', '-beta.1', dev_version)
+        # 如果beta分支已存在，则递增beta版本号
+        if beta_version and beta_version.startswith(dev_version.split('-dev')[0]):
+            current_beta_num = int(beta_version.split('.')[-1])
+            new_version = re.sub(r'-dev\.\d+', f'-beta.{current_beta_num + 1}', dev_version)
+        else:
+            new_version = re.sub(r'-dev\.\d+', '-beta.1', dev_version)
+        
         choices.append({
             "name": f"dev({dev_version}) → beta({new_version})",
             "value": ("dev", "beta", dev_version, new_version)
@@ -79,10 +85,6 @@ def promote():
     
     if not choices:
         print("❌ 没有可用的分支或无法获取版本号")
-        print("请检查：")
-        print("1. 确保远程仓库有dev或beta分支")
-        print("2. 确保提交信息第一行包含版本号（如v1.0.0-dev.1）")
-        print("3. 确保有网络连接可以访问远程仓库")
         return
     
     # 选择复制方向
@@ -114,7 +116,7 @@ def promote():
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             
-            print(f"⚡ 正在创建合并提交...")
+            print(f"⚡ 正在创建全新提交...")
             # 获取源分支最新提交
             remote_ref = subprocess.run(
                 ["git", "ls-remote", "--heads", repo_info.remote_url, from_branch],
@@ -122,47 +124,34 @@ def promote():
             ).stdout.strip()
             commit_hash = remote_ref.split()[0]
             
-            # 创建临时工作目录
-            work_dir = os.path.join(tmp_dir, "worktree")
-            subprocess.run(
-                ["git", "worktree", "add", work_dir, commit_hash],
-                cwd=tmp_dir, check=True
-            )
-            
-            # 创建新的提交（合并为一个提交）
+            # 创建新的空提交（完全独立的新提交）
             commit_message = f"{new_version}\n\nupdate from\n{old_version}"
             subprocess.run(
-                ["git", "commit", "--allow-empty", "-m", commit_message],
-                cwd=work_dir, check=True
+                ["git", "commit-tree", "-m", commit_message, commit_hash + "^{tree}"],
+                cwd=tmp_dir, check=True
             )
             
             # 获取新提交的哈希
             new_commit = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
-                cwd=work_dir, capture_output=True, text=True, check=True
+                cwd=tmp_dir, capture_output=True, text=True, check=True
             ).stdout.strip()
             
-            # 更新目标分支引用（包括main分支）
+            # 更新目标分支引用
             subprocess.run(
                 ["git", "update-ref", f"refs/heads/{to_branch}", new_commit],
                 cwd=tmp_dir, check=True
             )
             
-            # 强制推送（包括main分支）
+            # 强制推送
             subprocess.run(
                 ["git", "push", "origin", f"refs/heads/{to_branch}:refs/heads/{to_branch}", "--force"],
                 cwd=tmp_dir, check=True
             )
             
-            # 清理工作目录
-            subprocess.run(
-                ["git", "worktree", "remove", work_dir],
-                cwd=tmp_dir, check=True
-            )
-            
             print(f"\n✅ 操作成功完成！")
             print(f"• 源分支: {from_branch}@{old_version}")
-            print(f"• 目标分支: {to_branch}@{new_version} (已合并为一个提交)")
+            print(f"• 目标分支: {to_branch}@{new_version} (全新独立提交)")
             print(f"• 提交信息:\n{commit_message}")
             
     except subprocess.CalledProcessError as e:
