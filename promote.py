@@ -126,14 +126,8 @@ def promote():
             
             # 创建新的空提交（完全独立的新提交）
             commit_message = f"{new_version}\n\nupdate from\n{old_version}"
-            subprocess.run(
-                ["git", "commit-tree", "-m", commit_message, commit_hash + "^{tree}"],
-                cwd=tmp_dir, check=True
-            )
-            
-            # 获取新提交的哈希
             new_commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
+                ["git", "commit-tree", "-m", commit_message, f"{commit_hash}^{{tree}}"],
                 cwd=tmp_dir, capture_output=True, text=True, check=True
             ).stdout.strip()
             
@@ -143,23 +137,29 @@ def promote():
                 cwd=tmp_dir, check=True
             )
             
-            # 强制推送
-            subprocess.run(
+            # 强制推送（添加详细日志）
+            print(f"⚡ 正在推送到远程分支 {to_branch}...")
+            push_result = subprocess.run(
                 ["git", "push", "origin", f"refs/heads/{to_branch}:refs/heads/{to_branch}", "--force"],
-                cwd=tmp_dir, check=True
+                cwd=tmp_dir, capture_output=True, text=True, check=True
             )
+            
+            # 打印推送结果确认
+            print(f"🔍 推送结果: {push_result.stdout.strip()}")
             
             print(f"\n✅ 操作成功完成！")
             print(f"• 源分支: {from_branch}@{old_version}")
-            print(f"• 目标分支: {to_branch}@{new_version} (全新独立提交)")
+            print(f"• 目标分支: {to_branch}@{new_version} (已推送)")
+            print(f"• 提交哈希: {new_commit}")
             print(f"• 提交信息:\n{commit_message}")
             
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr if isinstance(e.stderr, str) else e.stderr.decode('utf-8') if e.stderr else str(e)
         print(f"\n❌ 操作失败: {error_msg.strip()}")
+        if hasattr(e, 'stdout') and e.stdout:
+            print(f"命令输出: {e.stdout.strip()}")
     except Exception as e:
         print(f"\n❌ 发生错误: {str(e)}")
-
 
 if __name__ == "__main__":
     promote()
